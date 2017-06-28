@@ -357,6 +357,7 @@ mod tokio {
                             self.sleep = Some(self.timer.sleep(rem));
                         } else {
                             self.read_wait = Some(task::current());
+                            return Err(io::ErrorKind::WouldBlock.into());
                         }
                     }
                     ret => {

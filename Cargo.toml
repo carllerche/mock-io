@@ -1,0 +1,14 @@
+[package]
+name = "mock-io"
+version = "0.1.0"
+authors = ["Carl Lerche <me@carllerche.com>"]
+
+[dependencies]
+futures = { version = "0.1", optional = true }
+tokio-io = { version = "0.1", optional = true }
+tokio-timer = { version = "0.1", optional = true }
+io-dump = { git = "https://github.com/carllerche/io-dump", optional = true }
+
+[features]
+tokio = ["futures", "tokio-io", "tokio-timer"]
+default = ["tokio", "io-dump"]

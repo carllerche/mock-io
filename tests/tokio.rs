@@ -3,7 +3,7 @@ extern crate mock_io;
 extern crate futures;
 extern crate tokio_io;
 
-use mock_io::{AsyncMock, Builder};
+use mock_io::{Mock, Builder};
 
 use futures::{Future, Poll, Async};
 use tokio_io::io::read_to_end;
@@ -13,18 +13,18 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn test_empty_mock() {
-    let mut mock: AsyncMock = Builder::new().build();
+    let mut mock = Builder::new().build();
 
     let mut buf = [0; 1024];
     assert_eq!(0, mock.read(&mut buf).unwrap());
 
-    let mut mock: AsyncMock = Builder::new().build();
+    let mut mock = Builder::new().build();
     assert!(mock.write(b"hello").is_err());
 }
 
 #[test]
 fn test_single_read() {
-    let mut mock: AsyncMock = Builder::new()
+    let mut mock = Builder::new()
         .read(b"hello world")
         .build();
 
@@ -42,7 +42,7 @@ fn test_single_read() {
 fn test_async_read() {
     let dur = Duration::from_millis(100);
 
-    let mock: AsyncMock = Builder::new()
+    let mock = Builder::new()
         .wait(dur)
         .read(b"hello world")
         .build();
@@ -60,7 +60,7 @@ fn test_async_read() {
 
 #[test]
 fn test_partial_read() {
-    let mut mock: AsyncMock = Builder::new()
+    let mut mock = Builder::new()
         .read(b"hello world")
         .build();
 
@@ -80,7 +80,7 @@ fn test_partial_read() {
 #[test]
 fn test_read_when_expect_write() {
     struct MyFuture {
-        mock: AsyncMock,
+        mock: Mock,
         wrote: bool,
     };
 
@@ -126,7 +126,7 @@ fn test_read_when_expect_write() {
 
 #[test]
 fn test_single_write() {
-    let mut mock: AsyncMock = Builder::new()
+    let mut mock = Builder::new()
         .write(b"hello world")
         .build();
 
@@ -141,7 +141,7 @@ fn test_single_write() {
 
 #[test]
 fn test_partial_write() {
-    let mut mock: AsyncMock = Builder::new()
+    let mut mock = Builder::new()
         .write(b"hello world")
         .build();
 
@@ -158,7 +158,7 @@ fn test_partial_write() {
 #[test]
 fn test_write_when_expecting_read() {
     struct MyFuture {
-        mock: AsyncMock,
+        mock: Mock,
         read: bool,
     };
 

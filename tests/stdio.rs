@@ -1,24 +1,24 @@
 extern crate mock_io;
 
-use mock_io::{Mock, Builder};
+use mock_io::Builder;
 
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
 #[test]
 fn test_empty_mock() {
-    let mut mock: Mock = Builder::new().build();
+    let mut mock = Builder::new().build();
 
     let mut buf = [0; 1024];
     assert_eq!(0, mock.read(&mut buf).unwrap());
 
-    let mut mock: Mock = Builder::new().build();
+    let mut mock = Builder::new().build();
     assert!(mock.write(b"hello").is_err());
 }
 
 #[test]
 fn test_single_read() {
-    let mut mock: Mock = Builder::new()
+    let mut mock = Builder::new()
         .read(b"hello world")
         .build();
 
@@ -36,7 +36,7 @@ fn test_single_read() {
 fn test_blocking_read() {
     let dur = Duration::from_millis(100);
 
-    let mut mock: Mock = Builder::new()
+    let mut mock = Builder::new()
         .wait(dur)
         .read(b"hello world")
         .build();
@@ -53,7 +53,7 @@ fn test_blocking_read() {
 
 #[test]
 fn test_partial_read() {
-    let mut mock: Mock = Builder::new()
+    let mut mock = Builder::new()
         .read(b"hello world")
         .build();
 
@@ -72,7 +72,7 @@ fn test_partial_read() {
 
 #[test]
 fn test_single_write() {
-    let mut mock: Mock = Builder::new()
+    let mut mock = Builder::new()
         .write(b"hello world")
         .build();
 
@@ -87,7 +87,7 @@ fn test_single_write() {
 
 #[test]
 fn test_partial_write() {
-    let mut mock: Mock = Builder::new()
+    let mut mock = Builder::new()
         .write(b"hello world")
         .build();
 

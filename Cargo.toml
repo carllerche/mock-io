@@ -2,6 +2,17 @@
 name = "mock-io"
 version = "0.1.0"
 authors = ["Carl Lerche <me@carllerche.com>"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+keywords = ["io", "testing"]
+repository = "https://github.com/carllerche/fixture-io"
+homepage = "https://github.com/carllerche/fixture-io"
+documentation = "https://docs.rs/io-dump"
+description = """
+Wraps an I/O handle, logging all activity in a readable format to a
+configurable destination.
+"""
+categories = ["development-tools::testing", "network-programming"]
 
 [dependencies]
 futures = { version = "0.1", optional = true }

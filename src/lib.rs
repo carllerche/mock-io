@@ -103,14 +103,7 @@ enum Action {
 #[derive(Debug)]
 struct Inner {
     actions: VecDeque<Action>,
-    state: Option<State>,
-}
-
-#[derive(Debug)]
-enum State {
-    Reading(Vec<u8>),
-    Writing(Vec<u8>),
-    Waiting(Instant),
+    waiting: Option<Instant>,
 }
 
 impl Builder {
@@ -158,7 +151,7 @@ impl From<Builder> for Mock {
         Mock {
             inner: Inner {
                 actions: src.actions,
-                state: None,
+                waiting: None,
             },
             tokio: TokioInner::default(),
             async: src.async,
@@ -204,7 +197,7 @@ impl Mock {
 impl Inner {
     fn read(&mut self, dst: &mut [u8]) -> io::Result<usize> {
         match self.action() {
-            Some(&mut State::Reading(ref mut data)) =>{
+            Some(&mut Action::Read(ref mut data)) =>{
                 // Figure out how much to copy
                 let n = cmp::min(dst.len(), data.len());
 
@@ -227,85 +220,85 @@ impl Inner {
         }
     }
 
-    fn write(&mut self, src: &[u8]) -> io::Result<usize> {
-        match self.action() {
-            Some(&mut State::Writing(ref mut expect)) => {
-                let n = cmp::min(src.len(), expect.len());
+    fn write(&mut self, mut src: &[u8]) -> io::Result<usize> {
+        let mut ret = 0;
 
-                // Assert the data matches
-                assert_eq!(&src[..n], &expect[..n]);
-
-                // Drop data that was matched
-                expect.drain(..n);
-
-                // Return the number of bytes matched
-                Ok(n)
-            }
-            Some(_) => {
-                // Expecting a read
-                Err(io::ErrorKind::WouldBlock.into())
-            }
-            None => {
-                // Socket is closed
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
+        if self.actions.is_empty() {
+            return Err(io::ErrorKind::BrokenPipe.into());
         }
+
+        for i in 0..self.actions.len() {
+            match self.actions[i] {
+                Action::Write(ref mut expect) => {
+                    let n = cmp::min(src.len(), expect.len());
+
+                    assert_eq!(&src[..n], &expect[..n]);
+
+                    // Drop data that was matched
+                    expect.drain(..n);
+                    src = &src[n..];
+
+                    ret += n;
+
+                    if src.is_empty() {
+                        return Ok(ret);
+                    }
+                }
+                _ => {}
+            }
+
+            // TODO: remove write
+        }
+
+        if ret == 0 {
+            panic!("not expecting write");
+        }
+
+        Ok(ret)
     }
 
     fn remaining_wait(&mut self) -> Option<Duration> {
         match self.action() {
-            Some(&mut State::Waiting(until)) => {
-                let now = Instant::now();
-
-                if now >= until {
-                    return None;
-                }
-
-                Some(until - now)
-            }
+            Some(&mut Action::Wait(dur)) => Some(dur),
             _ => None,
         }
     }
 
-    fn action(&mut self) -> Option<&mut State> {
-        if self.is_current_action_complete() {
-            // Clear the state
-            self.state = None;
+    fn action(&mut self) -> Option<&mut Action> {
+        loop {
+            if self.actions.is_empty() {
+                return None;
+            }
+
+            match self.actions[0] {
+                Action::Read(ref mut data) => {
+                    if !data.is_empty() {
+                        break;
+                    }
+                }
+                Action::Write(ref mut data) => {
+                    if !data.is_empty() {
+                        break;
+                    }
+                }
+                Action::Wait(ref mut dur) => {
+                    if let Some(until) = self.waiting {
+                        let now = Instant::now();
+
+                        if now < until {
+                            break;
+                        }
+                    } else {
+                        self.waiting = Some(Instant::now() + *dur);
+                        break;
+                    }
+                }
+            }
+
+            self.actions.pop_front();
         }
 
-        if self.state.is_none() {
-            // Get the next action and prepare it
-            match self.actions.pop_front() {
-                Some(Action::Read(data)) => {
-                    self.state = Some(State::Reading(data));
-                }
-                Some(Action::Write(data)) => {
-                    self.state = Some(State::Writing(data));
-                }
-                Some(Action::Wait(dur)) => {
-                    let until = Instant::now() + dur;
-                    self.state = Some(State::Waiting(until));
-                }
-                None => {}
-            }
-        }
-
-        self.state.as_mut()
-    }
-
-    fn is_current_action_complete(&mut self) -> bool {
-        match self.state {
-            Some(State::Reading(ref data)) => {
-                data.is_empty()
-            }
-            Some(State::Writing(ref data)) => {
-                data.is_empty()
-            }
-            Some(State::Waiting(until)) => {
-                Instant::now() >= until
-            }
-            None => false,
-        }
+        self.actions.front_mut()
     }
 }
 
@@ -408,7 +401,6 @@ mod tokio {
         timer: Timer,
         sleep: Option<Sleep>,
         read_wait: Option<Task>,
-        write_wait: Option<Task>,
     }
 
     impl Default for TokioInner {
@@ -423,7 +415,6 @@ mod tokio {
                 timer: timer,
                 sleep: None,
                 read_wait: None,
-                write_wait: None,
             }
         }
     }
@@ -431,19 +422,8 @@ mod tokio {
     impl Mock {
         fn maybe_wakeup_reader(&mut self) {
             match self.inner.action() {
-                Some(&mut State::Reading(_)) | None => {
+                Some(&mut Action::Read(_)) | None => {
                     if let Some(task) = self.tokio.read_wait.take() {
-                        task.notify();
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        fn maybe_wakeup_writer(&mut self) {
-            match self.inner.action() {
-                Some(&mut State::Writing(_)) => {
-                    if let Some(task) = self.tokio.write_wait.take() {
                         task.notify();
                     }
                 }
@@ -474,10 +454,7 @@ mod tokio {
                         return Err(io::ErrorKind::WouldBlock.into());
                     }
                 }
-                ret => {
-                    me.maybe_wakeup_writer();
-                    return ret;
-                }
+                ret => return ret,
             }
         }
     }
@@ -485,8 +462,7 @@ mod tokio {
     pub fn async_write(me: &mut Mock, src: &[u8]) -> io::Result<usize> {
         match me.inner.write(src) {
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                me.tokio.write_wait = Some(task::current());
-                return Err(io::ErrorKind::WouldBlock.into());
+                panic!("unexpected WouldBlock");
             }
             ret => {
                 me.maybe_wakeup_reader();
@@ -508,7 +484,20 @@ mod tokio {
     pub fn is_task_ctx() -> bool {
         use std::panic;
 
-        panic::catch_unwind(|| task::current()).is_ok()
+        // Save the existing panic hook
+        let h = panic::take_hook();
+
+        // Install a new one that does nothing
+        panic::set_hook(Box::new(|_| {}));
+
+        // Attempt to call the fn
+        let r = panic::catch_unwind(|| task::current()).is_ok();
+
+        // Re-install the old one
+        panic::set_hook(h);
+
+        // Return the result
+        r
     }
 }
 

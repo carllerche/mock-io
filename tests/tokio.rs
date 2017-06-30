@@ -157,46 +157,15 @@ fn test_partial_write() {
 
 #[test]
 fn test_write_when_expecting_read() {
-    struct MyFuture {
-        mock: Mock,
-        read: bool,
-    };
-
-    let mock = Builder::new()
-        .read(b"ping")
-        .write(b"hello world")
+    let mut mock = Builder::new()
+        .read(b"pong")
+        .write(b"ping")
         .build();
 
-    let fut = MyFuture {
-        mock: mock,
-        read: false,
-    };
+    let mut buf = [0; 1024];
 
-    impl Future for MyFuture {
-        type Item = ();
-        type Error = io::Error;
+    assert_eq!(4, mock.write(b"ping").unwrap());
+    assert_eq!(4, mock.read(&mut buf).unwrap());
 
-        fn poll(&mut self) -> Poll<(), io::Error> {
-            let mut buf = [0; 128];
-
-            // Try writing
-            match self.mock.write(b"hello world") {
-                Ok(n) => {
-                    assert!(self.read);
-                    assert_eq!(11, n);
-                    return Ok(Async::Ready(()));
-                }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                Err(e) => return Err(e),
-            }
-
-            // Read
-            assert_eq!(4, self.mock.read(&mut buf).unwrap());
-            self.read = true;
-
-            Ok(Async::NotReady)
-        }
-    }
-
-    fut.wait().unwrap();
+    assert_eq!(&buf[..4], b"pong");
 }

@@ -68,6 +68,9 @@
 //! [`Read`]: https://doc.rust-lang.org/std/io/trait.Read.html
 //! [`Write`]: https://doc.rust-lang.org/std/io/trait.Write.html
 
+#[macro_use]
+extern crate log;
+
 use std::{cmp, io};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -79,8 +82,13 @@ use std::time::{Duration, Instant};
 #[derive(Debug)]
 pub struct Mock {
     inner: Inner,
-    tokio: TokioInner,
+    tokio: tokio::Inner,
     async: Option<bool>,
+}
+
+#[derive(Debug)]
+pub struct Handle {
+    inner: tokio::Handle,
 }
 
 /// Builds `Mock` instances.
@@ -142,20 +150,48 @@ impl Builder {
 
     /// Build a `Mock` value according to the defined script.
     pub fn build(&mut self) -> Mock {
-        self.clone().into()
+        let (mock, _) = self.build_with_handle();
+        mock
     }
-}
 
-impl From<Builder> for Mock {
-    fn from(src: Builder) -> Mock {
-        Mock {
+    /// Build a `Mock` value paired with a handle
+    pub fn build_with_handle(&mut self) -> (Mock, Handle) {
+        let (tokio, handle) = tokio::Inner::new();
+
+        let src = self.clone();
+
+        let mock = Mock {
             inner: Inner {
                 actions: src.actions,
                 waiting: None,
             },
-            tokio: TokioInner::default(),
+            tokio: tokio,
             async: src.async,
-        }
+        };
+
+        let handle = Handle { inner: handle };
+
+        (mock, handle)
+    }
+}
+
+impl Handle {
+    /// Sequence a `read` operation.
+    ///
+    /// The next operation in the mock's script will be to expect a `read` call
+    /// and return `buf`.
+    pub fn read(&mut self, buf: &[u8]) -> &mut Self {
+        self.inner.read(buf);
+        self
+    }
+
+    /// Sequence a `write` operation.
+    ///
+    /// The next operation in the mock's script will be to expect a `write`
+    /// call.
+    pub fn write(&mut self, buf: &[u8]) -> &mut Self {
+        self.inner.write(buf);
+        self
     }
 }
 
@@ -198,6 +234,7 @@ impl Inner {
     fn read(&mut self, dst: &mut [u8]) -> io::Result<usize> {
         match self.action() {
             Some(&mut Action::Read(ref mut data)) =>{
+                trace!("read; action=Read");
                 // Figure out how much to copy
                 let n = cmp::min(dst.len(), data.len());
 
@@ -210,21 +247,32 @@ impl Inner {
                 // Return the number of bytes read
                 Ok(n)
             }
-            Some(_) => {
+            Some(res) => {
+                trace!("read -- WouldBlock; action={:?}", res);
                 // Either waiting or expecting a write
                 Err(io::ErrorKind::WouldBlock.into())
             }
             None => {
+                trace!("read; action=None");
                  Ok(0)
             }
         }
     }
 
     fn write(&mut self, mut src: &[u8]) -> io::Result<usize> {
+        trace!("write; src={}", src.len());
         let mut ret = 0;
 
         if self.actions.is_empty() {
             return Err(io::ErrorKind::BrokenPipe.into());
+        }
+
+        match self.action() {
+            Some(&mut Action::Wait(..)) => {
+                trace!("    -> WouldBlock -- waiting");
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            _ => {}
         }
 
         for i in 0..self.actions.len() {
@@ -244,14 +292,13 @@ impl Inner {
                         return Ok(ret);
                     }
                 }
+                Action::Wait(..) => {
+                    break;
+                }
                 _ => {}
             }
 
             // TODO: remove write
-        }
-
-        if ret == 0 {
-            panic!("not expecting write");
         }
 
         Ok(ret)
@@ -295,7 +342,8 @@ impl Inner {
                 }
             }
 
-            self.actions.pop_front();
+            let action = self.actions.pop_front();
+            trace!("completed; action={:?}", action);
         }
 
         self.actions.front_mut()
@@ -305,7 +353,7 @@ impl Inner {
 impl io::Read for Mock {
     fn read(&mut self, dst: &mut [u8]) -> io::Result<usize> {
         if self.is_async() {
-            async_read(self, dst)
+            tokio::async_read(self, dst)
         } else {
             self.sync_read(dst)
         }
@@ -315,7 +363,7 @@ impl io::Read for Mock {
 impl io::Write for Mock {
     fn write(&mut self, src: &[u8]) -> io::Result<usize> {
         if self.is_async() {
-            async_write(self, src)
+            tokio::async_write(self, src)
         } else {
             self.sync_write(src)
         }
@@ -372,7 +420,7 @@ mod io_dump {
     }
 }
 
-use tokio::*;
+// use tokio::*;
 
 #[cfg(feature = "tokio")]
 mod tokio {
@@ -382,7 +430,8 @@ mod tokio {
 
     use super::*;
 
-    use self::futures::{Future, Poll, Async};
+    use self::futures::{Future, Stream, Poll, Async};
+    use self::futures::sync::mpsc;
     use self::futures::task::{self, Task};
     use self::tokio_io::{AsyncRead, AsyncWrite};
     use self::tokio_timer::{Timer, Sleep};
@@ -397,25 +446,56 @@ mod tokio {
     }
 
     #[derive(Debug)]
-    pub struct TokioInner {
+    pub struct Inner {
         timer: Timer,
         sleep: Option<Sleep>,
         read_wait: Option<Task>,
+        rx: mpsc::UnboundedReceiver<Action>,
     }
 
-    impl Default for TokioInner {
-        fn default() -> Self {
+    #[derive(Debug)]
+    pub struct Handle {
+        tx: mpsc::UnboundedSender<Action>,
+    }
+
+    // ===== impl Handle =====
+
+    impl Handle {
+        pub fn read(&mut self, buf: &[u8]) {
+            mpsc::UnboundedSender::send(&mut self.tx, Action::Read(buf.into())).unwrap();
+        }
+
+        pub fn write(&mut self, buf: &[u8]) {
+            mpsc::UnboundedSender::send(&mut self.tx, Action::Write(buf.into())).unwrap();
+        }
+    }
+
+    // ===== impl Inner =====
+
+    impl Inner {
+        pub fn new() -> (Inner, Handle) {
             // TODO: We probably want a higher resolution timer.
             let timer = tokio_timer::wheel()
                 .tick_duration(Duration::from_millis(1))
                 .max_timeout(Duration::from_secs(3600))
                 .build();
 
-            TokioInner {
+            let (tx, rx) = mpsc::unbounded();
+
+            let inner = Inner {
                 timer: timer,
                 sleep: None,
                 read_wait: None,
-            }
+                rx: rx,
+            };
+
+            let handle = Handle { tx };
+
+            (inner, handle)
+        }
+
+        pub(crate) fn poll_action(&mut self) -> Poll<Option<Action>, ()> {
+            self.rx.poll()
         }
     }
 
@@ -454,19 +534,73 @@ mod tokio {
                         return Err(io::ErrorKind::WouldBlock.into());
                     }
                 }
+                Ok(0) => {
+                    // TODO: Extract
+                    match me.tokio.poll_action().unwrap() {
+                        Async::Ready(Some(action)) => {
+                            me.inner.actions.push_back(action);
+                            continue;
+                        }
+                        Async::Ready(None) => {
+                            return Ok(0);
+                        }
+                        Async::NotReady => {
+                            return Err(io::ErrorKind::WouldBlock.into());
+                        }
+                    }
+                }
                 ret => return ret,
             }
         }
     }
 
     pub fn async_write(me: &mut Mock, src: &[u8]) -> io::Result<usize> {
-        match me.inner.write(src) {
-            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                panic!("unexpected WouldBlock");
+        loop {
+            if let Some(ref mut sleep) = me.tokio.sleep {
+                let res = try!(sleep.poll());
+
+                if !res.is_ready() {
+                    return Err(io::ErrorKind::WouldBlock.into());
+                }
             }
-            ret => {
-                me.maybe_wakeup_reader();
-                ret
+
+            // If a sleep is set, it has already fired
+            me.tokio.sleep = None;
+
+            match me.inner.write(src) {
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    if let Some(rem) = me.inner.remaining_wait() {
+                        me.tokio.sleep = Some(me.tokio.timer.sleep(rem));
+                    } else {
+                        panic!("unexpected WouldBlock");
+                    }
+                }
+                Ok(0) => {
+                    // TODO: Is this correct?
+                    if !me.inner.actions.is_empty() {
+                        trace!("async_write -- WouldBlock (actions not empty)");
+                        return Err(io::ErrorKind::WouldBlock.into());
+                    }
+
+                    // TODO: Extract
+                    match me.tokio.poll_action().unwrap() {
+                        Async::Ready(Some(action)) => {
+                            me.inner.actions.push_back(action);
+                            continue;
+                        }
+                        Async::Ready(None) => {
+                            panic!("unexpected write");
+                        }
+                        Async::NotReady => {
+                            trace!("async_write -- WouldBlock (waiting for actions)");
+                            return Err(io::ErrorKind::WouldBlock.into());
+                        }
+                    }
+                }
+                ret => {
+                    me.maybe_wakeup_reader();
+                    return ret;
+                }
             }
         }
     }
@@ -507,14 +641,35 @@ mod tokio {
 
     use std::io;
 
-    #[derive(Debug, Default)]
-    pub struct TokioInner;
+    #[derive(Debug)]
+    pub struct Inner;
 
-    fn async_read(_: &mut Mock, _: &mut [u8]) -> io::Result<usize> {
+    #[derive(Debug)]
+    pub struct Handle;
+
+    impl Inner {
+        pub fn new() -> (Inner, Handle) {
+            (Inner, Handle)
+        }
+    }
+
+    // ===== impl Handle =====
+
+    impl Handle {
+        pub fn read(&mut self, _buf: &[u8]) {
+            unimplemented!();
+        }
+
+        pub fn write(&mut self, _buf: &[u8]) {
+            unimplemented!();
+        }
+    }
+
+    pub fn async_read(_: &mut Mock, _: &mut [u8]) -> io::Result<usize> {
         unreachable!();
     }
 
-    fn async_write(_: &mut Mock, _: &[u8]) -> io::Result<usize> {
+    pub fn async_write(_: &mut Mock, _: &[u8]) -> io::Result<usize> {
         unreachable!();
     }
 

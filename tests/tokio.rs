@@ -1,3 +1,5 @@
+#![cfg(feature = "tokio")]
+
 extern crate mock_io;
 
 extern crate futures;

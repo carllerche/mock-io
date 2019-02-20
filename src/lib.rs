@@ -510,11 +510,11 @@ mod tokio {
     #[derive(Debug, Default)]
     pub struct TokioInner;
 
-    fn async_read(_: &mut Mock, _: &mut [u8]) -> io::Result<usize> {
+    pub fn async_read(_: &mut Mock, _: &mut [u8]) -> io::Result<usize> {
         unreachable!();
     }
 
-    fn async_write(_: &mut Mock, _: &[u8]) -> io::Result<usize> {
+    pub fn async_write(_: &mut Mock, _: &[u8]) -> io::Result<usize> {
         unreachable!();
     }
 

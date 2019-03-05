@@ -232,7 +232,10 @@ impl Inner {
                 Action::Write(ref mut expect) => {
                     let n = cmp::min(src.len(), expect.len());
 
-                    assert_eq!(&src[..n], &expect[..n]);
+                    assert_eq!(&src[..n], &expect[..n],
+                               "\n hex written: {:02x?}\nhex expected: {:02x?}\n        DIFF:  {}^^",
+                               &src[..n], &expect[..n],
+                               "    ".repeat(src[..n].iter().zip(expect[..n].iter()).position(|(&x,&y)| x != y).unwrap()));
 
                     // Drop data that was matched
                     expect.drain(..n);
